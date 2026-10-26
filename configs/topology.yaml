@@ -1,0 +1,21 @@
+topology:
+  kind: barabasi_albert
+  num_nodes: 10
+  seed: 7
+  min_capacity: 100
+  max_capacity: 500
+  min_bandwidth: 20
+  max_bandwidth: 120
+  min_delay: 2
+  max_delay: 12
+  min_loss: 0.1
+  max_loss: 1.5
+
+flow:
+  runs: 3
+  duration_seconds: 15
+  demand_per_host: 5
+
+simulation:
+  time_step_seconds: 1
+  horizon: 5

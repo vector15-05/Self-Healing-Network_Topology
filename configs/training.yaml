@@ -1,0 +1,14 @@
+training:
+  seed: 7
+  failure_probability: 0.12
+  curriculum:
+    - single_failure
+    - cascading
+  epochs: 10
+  patience: 3
+  learning_rate: 0.01
+
+model:
+  hidden_dim: 16
+  message_passing_steps: 2
+  max_window: 3

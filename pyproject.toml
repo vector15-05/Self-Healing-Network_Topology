@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "self-healing-network"
+version = "0.1.0"
+description = "Self-healing network topology testbed with graph-based simulation, failure prediction, and DRL-ready environments."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "networkx>=3.0",
+    "numpy",
+    "PyYAML",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

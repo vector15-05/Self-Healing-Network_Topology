@@ -1,0 +1,13 @@
+evaluation:
+  topology_kinds:
+    - ring
+    - grid
+    - barabasi_albert
+    - erdos_renyi
+  seeds: [1, 2, 3]
+  failure_scenarios:
+    - hard_link_failure
+    - degradation
+    - congestion
+  repeat_runs: 5
+  report_dir: results
