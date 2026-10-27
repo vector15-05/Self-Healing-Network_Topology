@@ -1,5 +1,5 @@
 """Controller interface wrappers."""
 
-from .ryu_client import RyuControllerClient
+from .ryu_client import RyuControllerClient, RyuControllerError
 
-__all__ = ["RyuControllerClient"]
+__all__ = ["RyuControllerClient", "RyuControllerError"]

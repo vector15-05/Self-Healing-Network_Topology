@@ -4,10 +4,19 @@ evaluation:
     - grid
     - barabasi_albert
     - erdos_renyi
+    - waxman
+  strategies:
+    - NO_OP
+    - REACTIVE
+    - LOAD_AWARE
+    - GNN_HEURISTIC
+    - FIXED_FEATURE_GREEDY
   seeds: [1, 2, 3]
   failure_scenarios:
     - hard_link_failure
-    - degradation
+    - gradual_degradation
     - congestion
+    - node_failure
+    - cascading
   repeat_runs: 5
   report_dir: results

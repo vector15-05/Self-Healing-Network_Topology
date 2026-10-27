@@ -1,12 +1,17 @@
 training:
   seed: 7
-  failure_probability: 0.12
-  curriculum:
-    - single_failure
-    - cascading
-  epochs: 10
-  patience: 3
-  learning_rate: 0.01
+  samples: 24
+  epochs: 100
+  learning_rate: 0.05
+  rl_timesteps: 100000
+  rl_learning_rate: 0.0003
+
+reward:
+  disconnected_flows: 10.0
+  qos_degradation: 1.0
+  reconfiguration_cost: 2.0
+  recovery_time: 0.2
+  terminal_bonus: 10.0
 
 model:
   hidden_dim: 16

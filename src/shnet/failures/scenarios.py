@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
+
+SCENARIO_KINDS = (
+    "hard_link_failure",
+    "node_failure",
+    "gradual_degradation",
+    "congestion",
+    "cascading",
+)
 
 
 @dataclass
@@ -16,92 +25,164 @@ class FailureScenario:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def build_failure_schedule(num_scenarios: int = 5, *, seed: int = 7) -> list[FailureScenario]:
-    scenario_pool = [
-        FailureScenario("hard_link_failure", "hard_link_failure", None, 1.0, 0.0),
-        FailureScenario("node_failure", "node_failure", None, 1.0, 1.0),
-        FailureScenario("gradual_degradation", "gradual_degradation", None, 0.6, 2.0),
-        FailureScenario("congestion", "congestion", None, 0.8, 3.0),
-        FailureScenario("cascading", "cascading", None, 1.2, 4.0),
-    ]
+def build_failure_schedule(
+    num_scenarios: int = 5,
+    *,
+    seed: int = 7,
+    rates: dict[str, float] | None = None,
+    interval_seconds: float = 1.0,
+) -> list[FailureScenario]:
+    if num_scenarios < 0:
+        raise ValueError("num_scenarios must be non-negative")
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+    rng = random.Random(seed)
+    if rates is not None:
+        unknown = set(rates) - set(SCENARIO_KINDS)
+        if unknown:
+            raise ValueError(f"Unknown failure kinds in rates: {sorted(unknown)}")
+        if not rates or any(weight < 0 for weight in rates.values()) or sum(rates.values()) <= 0:
+            raise ValueError("Failure rates must contain non-negative weights with a positive total")
+        choices = list(rates)
+        weights = [rates[kind] for kind in choices]
+    else:
+        choices = list(SCENARIO_KINDS)
+        weights = [1.0] * len(choices)
     schedule: list[FailureScenario] = []
     for idx in range(num_scenarios):
-        base = scenario_pool[idx % len(scenario_pool)]
+        kind = rng.choices(choices, weights=weights, k=1)[0]
         schedule.append(
             FailureScenario(
-                name=f"{base.name}_{idx}",
-                kind=base.kind,
-                target=base.target,
-                severity=round(base.severity + (idx * 0.15), 2),
-                timestamp=float(base.timestamp + idx),
+                name=f"{kind}_{idx}",
+                kind=kind,
+                severity=round(rng.uniform(0.6, 1.3), 2),
+                timestamp=idx * interval_seconds,
                 metadata={"seed": seed + idx},
             )
         )
     return schedule
 
 
+def _choose_edge(graph: nx.Graph, scenario: FailureScenario) -> tuple[Any, Any] | None:
+    if scenario.target is not None:
+        if not isinstance(scenario.target, (tuple, list)) or len(scenario.target) != 2:
+            raise ValueError("A link failure target must be a two-node tuple or list")
+        u, v = scenario.target
+        if not graph.has_edge(u, v):
+            raise ValueError(f"Failure target edge does not exist: {(u, v)!r}")
+        return u, v
+    edges = list(graph.edges)
+    if not edges:
+        return None
+    rng = random.Random(int(scenario.metadata.get("seed", 0)))
+    return edges[rng.randrange(len(edges))]
+
+
 def inject_failure(graph: nx.Graph, scenario: FailureScenario) -> nx.Graph:
+    """Apply a deterministic failure while retaining the physical topology."""
+    if scenario.kind not in SCENARIO_KINDS:
+        raise ValueError(f"Unsupported failure scenario kind: {scenario.kind}")
+    if scenario.severity < 0:
+        raise ValueError("Failure severity must be non-negative")
+
     cloned = graph.copy()
-    if scenario.kind == "hard_link_failure":
-        if scenario.target is None:
-            edges = list(cloned.edges)
-            if not edges:
-                return cloned
-            target = edges[0]
-        else:
-            target = scenario.target
-        if target in cloned.edges:
-            cloned.remove_edge(*target)
-        elif len(target) == 2 and target[0] in cloned and target[1] in cloned:
-            cloned.remove_edge(*target)
+    if scenario.kind in {"hard_link_failure", "cascading"}:
+        edge = _choose_edge(cloned, scenario)
+        if edge is None:
+            return cloned
+        u, v = edge
+        cloned[u][v]["active"] = False
+        cloned[u][v]["failure_kind"] = scenario.kind
+        cloned[u][v]["failure_timestamp"] = scenario.timestamp
+        if scenario.kind == "cascading":
+            # Model the shifted load on the remaining links incident to the endpoints.
+            for endpoint in edge:
+                for neighbor in cloned.neighbors(endpoint):
+                    if neighbor == (v if endpoint == u else u):
+                        continue
+                    attrs = cloned[endpoint][neighbor]
+                    attrs["utilization"] = min(
+                        1.0,
+                        float(attrs.get("utilization", 0.0)) + 0.25 * scenario.severity,
+                    )
         return cloned
 
     if scenario.kind == "node_failure":
-        if scenario.target is None:
-            targets = list(cloned.nodes)
-            if not targets:
+        target = scenario.target
+        if target is None:
+            nodes = list(cloned.nodes)
+            if not nodes:
                 return cloned
-            target = targets[0]
-        else:
-            target = scenario.target
-        if target in cloned:
-            cloned.remove_node(target)
+            rng = random.Random(int(scenario.metadata.get("seed", 0)))
+            target = nodes[rng.randrange(len(nodes))]
+        if target not in cloned:
+            raise ValueError(f"Failure target node does not exist: {target!r}")
+        cloned.nodes[target]["active"] = False
+        cloned.nodes[target]["failure_kind"] = scenario.kind
+        cloned.nodes[target]["failure_timestamp"] = scenario.timestamp
         return cloned
 
     if scenario.kind == "gradual_degradation":
-        for _, _, edge_data in cloned.edges(data=True):
-            edge_data["delay_ms"] = float(edge_data.get("delay_ms", 0.0)) + 5.0 * scenario.severity
-            edge_data["loss_pct"] = float(edge_data.get("loss_pct", 0.0)) + 0.8 * scenario.severity
+        for _, _, attrs in cloned.edges(data=True):
+            attrs["delay_ms"] = float(attrs.get("delay_ms", 0.0)) + 5.0 * scenario.severity
+            attrs["loss_pct"] = min(
+                100.0,
+                float(attrs.get("loss_pct", 0.0)) + 0.8 * scenario.severity,
+            )
+            attrs["failure_kind"] = scenario.kind
+            attrs["failure_timestamp"] = scenario.timestamp
         return cloned
 
     if scenario.kind == "congestion":
-        for _, _, edge_data in cloned.edges(data=True):
-            edge_data["utilization"] = min(1.0, float(edge_data.get("utilization", 0.0)) + 0.25 * scenario.severity)
-            edge_data["bandwidth_mbps"] = max(10.0, float(edge_data.get("bandwidth_mbps", 100.0)) * (1.0 - 0.1 * scenario.severity))
+        for _, _, attrs in cloned.edges(data=True):
+            attrs["utilization"] = min(
+                1.0,
+                float(attrs.get("utilization", 0.0)) + 0.25 * scenario.severity,
+            )
+            attrs["failure_kind"] = scenario.kind
+            attrs["failure_timestamp"] = scenario.timestamp
         return cloned
 
-    if scenario.kind == "cascading":
-        for edge in list(cloned.edges):
-            u, v = edge
-            cloned[u][v]["utilization"] = min(1.0, cloned[u][v].get("utilization", 0.0) + 0.2)
-        if cloned.number_of_edges() > 0:
-            u, v = next(iter(cloned.edges))
-            cloned.remove_edge(u, v)
-        return cloned
-
-    raise ValueError(f"Unsupported failure scenario kind: {scenario.kind}")
+    raise AssertionError("Scenario kind validation should make this unreachable")
 
 
-def failure_labels(graph: nx.Graph, failure_scenarios: list[FailureScenario]) -> dict[str, float]:
-    labels: dict[str, float] = {}
-    for edge in graph.edges:
-        labels[f"{edge[0]}->{edge[1]}"] = 0.0
+def failure_labels(
+    graph: nx.Graph,
+    failure_scenarios: list[FailureScenario],
+    *,
+    horizon_seconds: float = 0.0,
+    timestamp: float = 0.0,
+) -> dict[str, float]:
+    """Label existing links that fail in the requested future horizon."""
+    if horizon_seconds < 0:
+        raise ValueError("horizon_seconds must be non-negative")
+    labels = {
+        f"{u}->{v}": 0.0
+        for u, v in graph.edges
+    }
     for failure in failure_scenarios:
-        if failure.kind in {"hard_link_failure", "cascading"}:
-            target = failure.target
-            if target is None and graph.number_of_edges() > 0:
-                target = next(iter(graph.edges))
-            if target is not None:
-                key = f"{target[0]}->{target[1]}"
-                labels[key] = 1.0
+        if failure.kind not in {"hard_link_failure", "cascading", "node_failure"}:
+            continue
+        occurs_in_horizon = timestamp <= failure.timestamp <= timestamp + horizon_seconds
+        if not occurs_in_horizon:
+            continue
+        if failure.kind == "node_failure":
+            target_node = failure.target
+            if target_node is None:
+                nodes = list(graph.nodes)
+                if nodes:
+                    rng = random.Random(int(failure.metadata.get("seed", 0)))
+                    target_node = nodes[rng.randrange(len(nodes))]
+            for u, v in graph.edges:
+                if u == target_node or v == target_node:
+                    labels[f"{u}->{v}"] = 1.0
+            continue
+        target = failure.target or _choose_edge(graph, failure)
+        if target is None:
+            continue
+        u, v = target
+        if graph.has_edge(u, v):
+            labels[f"{u}->{v}"] = 1.0
+        elif graph.has_edge(v, u):
+            labels[f"{v}->{u}"] = 1.0
     return labels
